@@ -14,7 +14,7 @@ import re
 import yaml
 import psutil
 from discord.ext import commands
-from discord.ui import View
+from discord.ui import View, Button, Select
 from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
 from urllib.parse import urlparse
@@ -44,7 +44,6 @@ logging.basicConfig(
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix='!', intents=intents)
-participants = []
 
 def load_yaml(file_name, default={}):
     """通用 YAML 文件加載函數"""
@@ -91,6 +90,7 @@ def get_random_question():
     return random.choice(questions) if questions else None
 
 cooldowns = {}
+active_giveaways = {}
 
 @bot.event
 async def on_message(message):
@@ -682,6 +682,98 @@ async def kick(interaction: discord.Interaction, member: discord.Member, reason:
     )
     await interaction.response.send_message(embed=embed)
 
+class GiveawayView(View):
+    def __init__(self, guild_id, prize, duration, timeout=None):
+        super().__init__(timeout=timeout)
+        self.guild_id = guild_id
+        self.prize = prize
+        self.participants = set()
+        self.duration = duration
+
+    async def on_timeout(self):
+        await self.end_giveaway()
+
+    async def end_giveaway(self):
+        if self.guild_id not in active_giveaways:
+            return
+
+        giveaway = active_giveaways.pop(self.guild_id)
+        channel = bot.get_channel(giveaway["channel_id"])
+        if not channel:
+            return
+
+        if not self.participants:
+            await channel.send("😢 抽獎活動結束，沒有有效的參與者。")
+            return
+
+        winner = random.choice(list(self.participants))
+        embed = discord.Embed(
+            title="🎉 抽獎活動結束 🎉",
+            description=(
+                f"**獎品**: {self.prize}\n"
+                f"**獲勝者**: {winner.mention}\n\n"
+                "感謝所有參與者！"
+            ),
+            color=discord.Color.green()
+        )
+        await channel.send(embed=embed)
+
+    @discord.ui.button(label="參加抽獎", style=discord.ButtonStyle.green)
+    async def participate(self, button: Button, interaction: discord.Interaction):
+        if interaction.user not in self.participants:
+            self.participants.add(interaction.user)
+            await interaction.response.send_message("✅ 你已成功參加抽獎！", ephemeral=True)
+        else:
+            await interaction.response.send_message("⚠️ 你已經參加過了！", ephemeral=True)
+
+    @discord.ui.button(label="結束抽獎", style=discord.ButtonStyle.red, row=1)
+    async def end_giveaway_button(self, button: Button, interaction: discord.Interaction):
+        if not interaction.user.guild_permissions.administrator:
+            await interaction.response.send_message("❌ 只有管理員可以結束抽獎活動。", ephemeral=True)
+            return
+
+        await self.end_giveaway()
+        await interaction.response.send_message("🔔 抽獎活動已結束！", ephemeral=True)
+        self.stop()
+
+@bot.slash_command(name="start_giveaway", description="開始抽獎活動")
+async def start_giveaway(interaction: discord.Interaction, duration: int, prize: str):
+    """
+    啟動抽獎活動
+    :param duration: 抽獎持續時間（秒）
+    :param prize: 獎品名稱
+    """
+    if not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message("❌ 你需要管理員權限才能使用此指令。", ephemeral=True)
+        return
+
+    if interaction.guild.id in active_giveaways:
+        await interaction.response.send_message("⚠️ 已經有正在進行的抽獎活動。", ephemeral=True)
+        return
+
+    embed = discord.Embed(
+        title="🎉 抽獎活動開始了！ 🎉",
+        description=(
+            f"**獎品**: {prize}\n"
+            f"**活動持續時間**: {duration} 秒\n\n"
+            "點擊下方的按鈕參與抽獎！"
+        ),
+        color=discord.Color.gold()
+    )
+    embed.set_footer(text="祝你好運！")
+
+    view = GiveawayView(interaction.guild.id, prize, duration, timeout=duration)
+
+    await interaction.response.send_message(embed=embed, view=view)
+    message = await interaction.followup.send("🔔 抽獎活動已經開始！參與者請點擊按鈕參加！")
+
+    active_giveaways[interaction.guild.id] = {
+        "message_id": message.id,
+        "channel_id": interaction.channel_id,
+        "prize": prize,
+        "view": view
+    }
+
 @bot.slash_command(name="clear", description="清除指定数量的消息")
 async def clear(interaction: discord.Interaction, amount: int):
     await interaction.response.defer(thinking=True)
@@ -792,8 +884,9 @@ async def ping(interaction: discord.Interaction):
         description="正在測試 Discord API 每秒讀取訊息和返回延遲...",
         color=discord.Color.blurple()
     )
-    message = await interaction.response.send_message(embed=embed)
-    message = await interaction.original_response()
+
+    await interaction.response.defer()
+    message = await interaction.followup.send(embed=embed)
 
     iterations = 10
     total_time = 0
@@ -1575,11 +1668,12 @@ async def fish(interaction: discord.Interaction):
 
 class RodView(discord.ui.View):
     def __init__(self, user_id, guild_id, available_rods, current_rod):
-        super().__init__(timeout=None)
+        super().__init__(timeout=180)
         self.user_id = user_id
         self.guild_id = guild_id
         self.available_rods = available_rods
         self.current_rod = current_rod
+        self.message = None
 
         select = discord.ui.Select(
             placeholder=f"🎣 目前釣竿: {current_rod}",
@@ -1599,6 +1693,9 @@ class RodView(discord.ui.View):
     async def switch_rod(self, interaction: discord.Interaction):
         if str(interaction.user.id) != self.user_id:
             await interaction.response.send_message("🚫 這不是你的設定菜單，請使用 `/fish_rod` 查看你的釣竿。", ephemeral=True)
+            return
+
+        if interaction.response.is_done():
             return
 
         selected_value = interaction.data['values'][0]
@@ -1643,6 +1740,13 @@ class RodView(discord.ui.View):
 
             with open('user_rod.yml', 'w', encoding='utf-8') as file:
                 yaml.dump(user_rods, file)
+
+    async def on_timeout(self):
+        """清除超时交互组件"""
+        for child in self.children:
+            child.disabled = True
+        if self.message:
+            await self.message.edit(view=self)
 
 @bot.slash_command(name="fish_rod", description="查看並切換你的釣魚竿")
 async def fish_rod(interaction: discord.Interaction):
@@ -1689,16 +1793,14 @@ async def fish_rod(interaction: discord.Interaction):
 
     embed = discord.Embed(
         title="釣竿管理",
-        description=(
-            f"🎣 你現在使用的釣竿是: **{current_rod}**\n"
-            f"⬇️ 從下方選單選擇以切換釣竿！"
-        ),
+        description=(f"🎣 你現在使用的釣竿是: **{current_rod}**\n⬇️ 從下方選單選擇以切換釣竿！"),
         color=discord.Color.blue()
     )
-    await interaction.response.send_message(
-        embed=embed,
-        view=RodView(user_id, guild_id, available_rods, current_rod)
-    )
+
+    view = RodView(user_id, guild_id, available_rods, current_rod)
+
+    sent_message = await interaction.response.send_message(embed=embed, view=view)
+    view.message = await interaction.original_response()
 
 @bot.slash_command(name="fish_back", description="查看你的漁獲")
 async def fish_back(interaction: discord.Interaction):
@@ -1714,26 +1816,35 @@ async def fish_back(interaction: discord.Interaction):
 
     user_id = str(interaction.user.id)
 
-    if user_id in fishing_data and fishing_data[user_id]['caught_fish']:
+    if user_id in fishing_data and fishing_data[user_id].get('caught_fish'):
         caught_fish = fishing_data[user_id]['caught_fish']
         fish_list = "\n".join(
             [f"**{fish['name']}** - {fish['rarity']} ({fish['size']} 公斤)" for fish in caught_fish]
         )
 
-        await interaction.response.defer(thinking=True)
-        await asyncio.sleep(2)
+        try:
+            await interaction.response.defer()
+            await asyncio.sleep(2)
 
-        embed = discord.Embed(
-            title="🎣 你的漁獲列表",
-            description=fish_list,
-            color=discord.Color.blue()
-        )
-        embed.set_footer(text="祝你下一次捕到更多的稀有魚！")
-        
-        await interaction.followup.send(embed=embed)
+            embed = discord.Embed(
+                title="🎣 你的漁獲列表",
+                description=fish_list,
+                color=discord.Color.blue()
+            )
+            embed.set_footer(text="數據提供為釣魚協會")
 
+            await interaction.followup.send(embed=embed)
+        except discord.errors.NotFound:
+            await interaction.channel.send(
+                f"{interaction.user.mention} ❌ 你的查詢超時，請重新使用 `/fish_back` 查看漁獲！"
+            )
     else:
-        await interaction.response.send_message("❌ 你還沒有捕到任何魚！", ephemeral=True)
+        try:
+            await interaction.response.send_message("❌ 你還沒有捕到任何魚！", ephemeral=True)
+        except discord.errors.NotFound:
+            await interaction.channel.send(
+                f"{interaction.user.mention} ❌ 查詢失敗，請重新嘗試 `/fish_back`！"
+            )
 
 def is_on_cooldown(user_id, cooldown_file, cooldown_hours):
     try:
@@ -1806,7 +1917,7 @@ async def help(interaction: discord.Interaction):
         description=(
             "> `ban` - 封鎖用戶\n> `kick` - 踢出用戶\n"
             "> `addmoney` - 添加金錢\n> `removemoney` - 移除金錢\n"
-            "> `strat_giveaway` - 開啓抽獎\n> `mute` - 禁言某位成員\n"
+            "> `start_giveaway` - 開啓抽獎\n> `mute` - 禁言某位成員\n"
             "> `unmute` - 解除某位成員禁言"
         ),
         color=discord.Color.from_rgb(0, 51, 102)
@@ -1817,7 +1928,7 @@ async def help(interaction: discord.Interaction):
         description=(
             "> `time` - 未活動的待機時間顯示\n> `ping` - 顯示機器人的回復延遲\n"
             "> `server_info` - 獲取伺服器資訊\n> `user_info` - 獲取用戶資訊\n"
-            "> `feedback` - 回報錯誤\n> `trivia` - 問題挑戰(動漫)\n"
+            "> `feedback` - 回報錯誤\n> `trivia` - 問題挑戰(動漫)"
         ),
         color=discord.Color.green()
     )
@@ -1830,11 +1941,57 @@ async def help(interaction: discord.Interaction):
         ),
         color=discord.Color.blue()
     )
-    embed_common.set_footer(text="更多指令即將推出，敬請期待...")
+
+    for embed in [embed_test, embed_economy, embed_admin, embed_common, embed_fishing]:
+        embed.set_footer(text="更多指令即將推出，敬請期待...")
+
+    options = [
+        discord.SelectOption(label="普通指令", description="查看普通指令", value="common", emoji="🎉"),
+        discord.SelectOption(label="經濟系統", description="查看經濟系統指令", value="economy", emoji="💸"),
+        discord.SelectOption(label="管理員指令", description="查看管理員指令", value="admin", emoji="🔒"),
+        discord.SelectOption(label="釣魚指令", description="查看釣魚相關指令", value="fishing", emoji="🎣"),
+        discord.SelectOption(label="測試員指令", description="查看測試員指令", value="test", emoji="⚠️"),
+    ]
+
+    async def select_callback(interaction: discord.Interaction):
+        selected_value = select.values[0]
+        embeds = {
+            "common": embed_common,
+            "economy": embed_economy,
+            "admin": embed_admin,
+            "fishing": embed_fishing,
+            "test": embed_test
+        }
+        selected_embed = embeds.get(selected_value, embed_common)
+        await interaction.response.edit_message(embed=selected_embed)
+
+    select = Select(
+        placeholder="選擇指令分類...",
+        options=options
+    )
+    select.callback = select_callback
+
+    class TimeoutView(View):
+        def __init__(self, timeout=60):
+            super().__init__(timeout=timeout)
+
+        async def on_timeout(self):
+            for child in self.children:
+                if isinstance(child, Select):
+                    child.disabled = True
+            await interaction.edit_original_response(
+                content="此選單已過期，請重新輸入 `/help` 以獲取指令幫助。",
+                view=self
+            )
+
+    view = TimeoutView()
+    view.add_item(select)
 
     await interaction.response.send_message(
-        embeds=[embed_test, embed_economy, embed_admin, embed_fishing, embed_common]
-        )
+        content="以下是目前可用指令的分類：",
+        embed=embed_common,
+        view=view
+    )
 
 try:
     bot.run(TOKEN, reconnect=True)
