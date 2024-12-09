@@ -104,16 +104,16 @@ async def on_message(message):
     
     content = message.content
     
-    if '關於機器人幽幽子' in message.content.lower():
-        await message.channel.send('幽幽子的創建時間是<t:1623245700:D>')
+    if '關於機器人妖夢' in message.content.lower():
+        await message.channel.send('妖夢的創建時間是 未知')
     
     if '關於製作者' in message.content.lower():
         await message.channel.send('製作者是個很好的人 雖然看上有有點怪怪的')
     
-    if '幽幽子的生日' in message.content.lower():
-        await message.channel.send('機器人幽幽子的生日在<t:1623245700:D>')
+    if '妖夢的生日' in message.content.lower():
+        await message.channel.send('機器人妖夢的生日在 未知')
     
-    if message.content.startswith('關閉幽幽子'):
+    if message.content.startswith('關閉妖夢'):
         if message.author.id == AUTHOR_ID:
             await message.channel.send("正在關閉...")
             await asyncio.sleep(2)
@@ -123,9 +123,9 @@ async def on_message(message):
             await message.channel.send("你無權關閉我 >_< ")
             return
 
-    elif message.content.startswith('重啓幽幽子'):
+    elif message.content.startswith('重啓妖夢'):
         if message.author.id == AUTHOR_ID:
-            await message.channel.send("正在重啟幽幽子...")
+            await message.channel.send("正在重啟妖夢...")
             subprocess.Popen([sys.executable, os.path.abspath(__file__)])
             await bot.close()
             return
@@ -133,7 +133,7 @@ async def on_message(message):
             await message.channel.send("你無權重啓我 >_< ")
             return
 
-    if '幽幽子待機多久了' in message.content.lower():
+    if '妖夢待機多久了' in message.content.lower():
         current_time = time.time()
         idle_seconds = current_time - last_activity_time
         idle_minutes = idle_seconds / 60
@@ -141,11 +141,11 @@ async def on_message(message):
         idle_days = idle_seconds / 86400
 
         if idle_days >= 1:
-            await message.channel.send(f'幽幽子目前已待機了 **{idle_days:.2f} 天**')
+            await message.channel.send(f'妖夢目前已待機了 **{idle_days:.2f} 天**')
         elif idle_hours >= 1:
-            await message.channel.send(f'幽幽子目前已待機了 **{idle_hours:.2f} 小时**')
+            await message.channel.send(f'妖夢目前已待機了 **{idle_hours:.2f} 小时**')
         else:
-            await message.channel.send(f'幽幽子目前已待機了 **{idle_minutes:.2f} 分钟**')
+            await message.channel.send(f'妖夢目前已待機了 **{idle_minutes:.2f} 分钟**')
 
     if isinstance(message.channel, discord.DMChannel):
         user_id = str(message.author.id)
@@ -1507,7 +1507,7 @@ async def fish_shop(interaction: discord.Interaction):
         ),
         color=discord.Color.gold()
     )
-    embed.set_footer(text="感謝您的信任與支持！祝您釣到大魚！")
+    embed.set_footer(text="商店物品供給為 釣魚協會")
 
     await interaction.response.send_message(
         embed=embed,
@@ -1566,6 +1566,17 @@ class FishView(discord.ui.View):
         self.user_id = user_id
         self.rod = rod
 
+    async def on_timeout(self):
+        """處理釣魚的超時事件"""
+        for child in self.children:
+            child.disabled = True
+        timeout_embed = discord.Embed(
+            title="⏳ 時間已過！",
+            description="你錯過了此次的釣魚機會！",
+            color=discord.Color.dark_gray()
+        )
+        await self.message.edit(embed=timeout_embed, view=None)
+
     @discord.ui.button(label="保存漁獲", style=discord.ButtonStyle.primary)
     async def save_fish(self, interaction: discord.Interaction, button: discord.ui.Button):
         if str(interaction.user.id) != self.user_id:
@@ -1582,15 +1593,14 @@ class FishView(discord.ui.View):
         if self.user_id not in fish_back:
             fish_back[self.user_id] = {'balance': 0, 'caught_fish': []}
 
-        user_data = fish_back[self.user_id]
-        user_data['caught_fish'].append(self.fish)
+        fish_back[self.user_id]['caught_fish'].append(self.fish)
 
         with open('fishiback.yml', 'w', encoding='utf-8') as file:
             yaml.dump(fish_back, file)
 
         await interaction.response.edit_message(
             content=f"✅ 你保存了 {self.fish['name']} ({self.fish['size']} 公斤) 到你的漁獲列表中！",
-            view=self
+            view=None
         )
 
     @discord.ui.button(label="再釣一次", style=discord.ButtonStyle.secondary)
@@ -1602,24 +1612,14 @@ class FishView(discord.ui.View):
         cooldown_time = get_cooldown(self.rod)
         if self.user_id in cooldowns and time.time() - cooldowns[self.user_id] < cooldown_time:
             remaining_time = cooldown_time - (time.time() - cooldowns[self.user_id])
-            await interaction.response.send_message(f"⏳ 你需要等待 {remaining_time:.1f} 秒後才能再次釣魚。", ephemeral=True)
+            await interaction.response.send_message(f"⏳ 冷卻中：{remaining_time:.1f} 秒", ephemeral=True)
             return
 
         cooldowns[self.user_id] = time.time()
-
         new_fish = catch_fish(self.rod)
-        self.fish = new_fish
 
         embed = generate_fish_embed(new_fish)
         await interaction.response.edit_message(embed=embed, view=FishView(new_fish, self.user_id, self.rod))
-
-    async def on_timeout(self):
-        embed = discord.Embed(
-            title="⏳ 你錯過了釣到大魚的時機！",
-            description="請專心一些，下次或許會有更好的機會！",
-            color=0x808080
-        )
-        await self.message.edit(content=None, embed=embed, view=None)
 
 def generate_fish_embed(fish):
     """根據魚生成嵌入消息"""
@@ -1657,14 +1657,15 @@ async def fish(interaction: discord.Interaction):
     cooldown_time = get_cooldown(current_rod)
     if user_id in cooldowns and time.time() - cooldowns[user_id] < cooldown_time:
         remaining_time = cooldown_time - (time.time() - cooldowns[user_id])
-        await interaction.response.send_message(f"⏳ 你需要等待 {remaining_time:.1f} 秒後才能再次釣魚。", ephemeral=True)
+        await interaction.response.send_message(f"⏳ 冷卻中：{remaining_time:.1f} 秒", ephemeral=True)
         return
 
     cooldowns[user_id] = time.time()
 
     fish_caught = catch_fish(current_rod)
     embed = generate_fish_embed(fish_caught)
-    await interaction.response.send_message(embed=embed, view=FishView(fish_caught, user_id, current_rod))
+
+    message = await interaction.response.send_message(embed=embed, view=FishView(fish_caught, user_id, current_rod))
 
 class RodView(discord.ui.View):
     def __init__(self, user_id, guild_id, available_rods, current_rod):
@@ -1799,8 +1800,11 @@ async def fish_rod(interaction: discord.Interaction):
 
     view = RodView(user_id, guild_id, available_rods, current_rod)
 
-    sent_message = await interaction.response.send_message(embed=embed, view=view)
-    view.message = await interaction.original_response()
+    # 發送消息
+    await interaction.response.send_message(embed=embed, view=view)
+
+    # 使用 followup 獲取已發送消息
+    view.message = await interaction.followup.fetch_message(interaction.id)
 
 @bot.slash_command(name="fish_back", description="查看你的漁獲")
 async def fish_back(interaction: discord.Interaction):
@@ -1972,19 +1976,23 @@ async def help(interaction: discord.Interaction):
     select.callback = select_callback
 
     class TimeoutView(View):
-        def __init__(self, timeout=60):
+        def __init__(self, interaction: discord.Interaction, timeout=60):
             super().__init__(timeout=timeout)
+            self.interaction = interaction
 
         async def on_timeout(self):
             for child in self.children:
                 if isinstance(child, Select):
                     child.disabled = True
-            await interaction.edit_original_response(
+            try:
+                await self.interaction.edit_original_response(
                 content="此選單已過期，請重新輸入 `/help` 以獲取指令幫助。",
                 view=self
-            )
+                )
+            except discord.NotFound:
+                print("Original response not found. It might have been deleted.")
 
-    view = TimeoutView()
+    view = TimeoutView(interaction)
     view.add_item(select)
 
     await interaction.response.send_message(
